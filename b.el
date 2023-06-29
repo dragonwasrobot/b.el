@@ -31,6 +31,8 @@
 
 ;;; Code:
 
+;; Dependencies
+
 (require 'dash) ; Too damn convenient.
 
 ;; Dec <-> Hex
