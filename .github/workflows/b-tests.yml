@@ -12,8 +12,7 @@ jobs:
     strategy:
       matrix:
         emacs_version:
-          - 24.4
-          - 29.0
+          - 27.1
           - snapshot
       fail-fast: false
     steps:
@@ -27,17 +26,3 @@ jobs:
       run: |
         bin/setup.sh
         bin/tests.sh
-
-  # docs:
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v3
-  #     - uses: purcell/setup-emacs@v4.0
-  #       with:
-  #         version: 28.1
-  #     - name: Generate documentation
-  #       run: |
-  #         bin/setup.sh
-  #         echo " Test Doc generation..."
-  #         bin/docs.sh
-  #         echo "════════════════════════════════════════════════════════════════════════════════"

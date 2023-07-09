@@ -1,11 +1,11 @@
-;;; b.el --- Byte manipulation library -*- lexical-binding: t; -*-
+;;; b.el --- Byte manipulation library -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2023 Peter Urbak
 
 ;; Author: Peter Urbak <peter@dragonwasrobot.com>
 ;; URL: https://github.com/dragonwasrobot/b.el
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "24.4") (dash "2.19"))
+;; Package-Requires: ((emacs "27.1") (dash "2.19"))
 ;; Keywords: lisp
 
 ;; This program is free software: you can redistribute it and/or modify
@@ -23,11 +23,50 @@
 
 ;;; Commentary:
 
-;; Byte manipulation library for Emacs.
-;;
-;; See documentation at https://github.com/dragonwasrobot/b.el
-;;
-;; Inspired by https://github.com/magnars/s.el
+;; A utility library for parsing and manipulation bytes either as decimals,
+;; hexadecimals or binaries. The main purposes of this library is for rapid
+;; prototyping of binary protocol and learning about the representation and
+;; manipulation of these fundamental building blocks.
+
+;; The library operates on decimal (base 10), hexadecimal (base 16) and binary
+;; (base 2) values represented as elisp integers, strings and lists,
+;; respectively, e.g. 32, "20", and \\='(0 0 1 0 0 0 0 0) all represent the same
+;; value.
+
+;; The following constraints are placed on the input and output values
+;; throughout this library:
+
+;; The standard unit is a byte (8 bits), a value between 0-255, and so if a
+;; negative value or a value above 255 is passed to any function it will have
+;; its valued truncated silently to the size of one byte, unless a specific
+;; memory size is given to the function. The preferred way to produce values
+;; above 255 is to use one of the `b-dec-parse-little-endian' or
+;; `b-dec-parse-big-endian' functions for constructing optionally signed 8, 16,
+;; or 32 bit integers from one or more bytes. Finally, bytes can also be parsed
+;; as floats with the `b-dec-parse-32bit-float'.
+
+;; When representing hexadecimal values, the library does not use the common
+;; '0x' prefix as this can quickly become noisy when dealing with lists of
+;; hexadecimal values. The length of any computed hexadecimal string
+;; representation is always divisible by 2 to match a whole set of bytes.
+
+;; Furthermore, the binary list representation has the leftmost bit at index 0
+;; in contrast to the traditional indexing of bits in a byte from the right.
+;; This choice was made due to readability of the printed result and so please
+;; be aware of this when manipulating a binary list using any regular elisp
+;; function that isn't part of this library. Computed binary list
+;; representations are always divisible by 8 to match a whole set of bytes.
+
+;; Finally, some of the functions in this library are simple wrappers around
+;; built-in functions but included here -- often with slight modifications -- for
+;; the sake of completeness of the library.
+
+;; For further documentation and example function calls, see:
+;; https://github.com/dragonwasrobot/b.el
+
+;; This library is inspired by https://github.com/magnars/s.el and uses
+;; https://github.com/emacsfodder/etd to generate all example documentation and
+;; tests, which are located in `dev/b-examples.el'.
 
 ;;; Code:
 
@@ -35,348 +74,282 @@
 
 (require 'dash) ; Too damn convenient.
 
-;; Dec <-> Hex
+;;; Conversion functions
 
-(defun b-dec-to-hex (dec)
+;;;; Dec <-> Hex
+
+(defun b-dec-to-hex (dec &optional bytes)
   "Return the string representation of the hexadecimal number corresponding to DEC.
 
-A zero is padded onto the left if the result has an uneven
-length, i.e. \"1\" becomes \"01\". However the result does not
-include the common \"0x\" prefix since this quickly becomes
-verbose when dealing with a list of hex values.
+The value of DEC gets truncated relative to the total BYTES of
+memory. The default value of BYTES is 1 and so DEC must be
+between 0 and 255.
 
-Examples:
-
-  (b-dec-to-hex 2) ==> \"02\"
-  (b-dec-to-hex 16) ==> \"10\"
-  (b-dec-to-hex 280) ==> \"0118\""
+A zero is padded onto the left of the result if it has an uneven
+length, i.e. 1 becomes 01."
   (declare (pure t) (side-effect-free t))
 
-  (let ((hex-string (format "%X" dec)))
+  (let* ((mem-bytes (if bytes bytes 1))
+         (hex-string (format "%X" (b-dec-truncate dec mem-bytes))))
     (if (= 1 (mod (length hex-string) 2))
         (concat "0" hex-string)
       hex-string)))
 
-(defun b-hex-to-dec (hex)
-  "Parse HEX as a hexadecimal number and return the decimal representation.
+(defun b-hex-to-dec (hex &optional bytes)
+  "Parse HEX as a hexadecimal number and return its decimal representation.
 
-Examples:
-
-  (b-hex-to-dec \"10\") ==> 16
-  (b-hex-to-dec \"118\") ==> 280
-  (b-hex-to-dec \"0118\") ==> 280
-  (b-hex-to-dec \"1010\") ==> 4112."
+The value of HEX gets truncated relative to the total BYTES of
+memory. The default value of BYTES is 1 and so HEX must be
+between 00 and FF."
   (declare (pure t) (side-effect-free t))
 
-  (string-to-number hex 16))
+  (let ((mem-bytes (if bytes bytes 1)))
+    (b-dec-truncate (string-to-number hex 16) mem-bytes)))
 
-;; Dec <-> Bin
+;;;; Dec <-> Bin
 
-(defun b-dec-to-bin (dec)
+(defun b-dec-to-bin (dec &optional bytes)
   "Return the binary list representation of the decimal DEC.
+
+The value of DEC gets truncated relative to the total BYTES of
+memory. The default value of BYTES is 1 and so DEC must be
+between 0 and 255.
 
 One or more zeroes are padded onto the left of the resulting list
 if the length is not divisible by 8, i.e. \\='(0 1 1 0 1) becomes
-\\='(0 0 0 0 1 1 0 1).
-
-TODO: Note that bits are usually indexed from the right so be
-aware of this when using the `bin' representation directly.
-
-Examples:
-
-  (b-dec-to-bin 17) ==> \\='(0 0 0 1 0 0 0 1)"
+\\='(0 0 0 0 1 1 0 1)."
   (declare (pure t) (side-effect-free t))
 
-  (let* ((bin-list ((lambda () (let ((bin '()))
-                                 (while (not (= dec 0))
-                                   (setq bin (cons (if (= 1 (logand dec 1)) 1 0) bin))
-                                   (setq dec (ash dec -1)))
-                                 bin))))
+  (let* ((mem-bytes (if bytes bytes 1))
+         (dec (b-dec-truncate dec mem-bytes))
+
+         (bin-list ((lambda () (let ((bin '()))
+                            (while (not (= dec 0))
+                              (setq bin (cons (if (= 1 (b-dec-and dec 1)) 1 0) bin))
+                              (setq dec (ash dec -1)))
+                            bin))))
 
          (length-mod-8 (mod (length bin-list) 8)))
+
     (if (> length-mod-8 0)
         (append (make-list (- 8 length-mod-8) 0) bin-list)
       bin-list)))
 
-(defun b-bin-to-dec (bin)
+(defun b-bin-to-dec (bin &optional bytes)
   "Parse BIN as a list of bits and return the corresponding decimal number.
 
-Examples:
+The value of BIN gets truncated relative to the total BYTES of
+memory. The default value of BYTES is 1 and so BIN must be
+between \\='(0 0 0 0 0 0 0 0) and  \\='(1 1 1 1 1 1 1 1)."
+  (declare (pure t) (side-effect-free t))
 
-  (b-bin-to-dec \\='(1 1 0 1)) ==> 13
-  (b-bin-to-dec \\='(1 0 1 0 1)) ==> 21"
+  (let ((mem-bytes (if bytes bytes 1)))
+    (--> bin
+       (-map #'number-to-string it)
+       (mapconcat 'identity it "")
+       (b-dec-truncate (string-to-number it 2) mem-bytes))))
+
+;;;; Hex <-> Bin
+
+(defun b-hex-to-bin (hex &optional bytes)
+  "Return the binary list representation of the hexadecimal HEX.
+
+The value of HEX gets truncated relative to the total BYTES of
+memory. The default value of BYTES is 1 and so DEC must be
+between 00 and FF.
+
+One or more zeroes are padded onto the left of the resulting list
+if the length is not divisible by 8, i.e. \\='(0 1 1 0 1) becomes
+\\='(0 0 0 0 1 1 0 1)."
+  (declare (pure t) (side-effect-free t))
+
+  (--> hex
+       (b-hex-to-dec it bytes)
+       (b-dec-to-bin it bytes)))
+
+(defun b-bin-to-hex (bin &optional bytes)
+  "Parse BIN as a list of bits and return the hex string representation.
+
+The value of BIN gets truncated relative to the total BYTES of
+memory. The default value of BYTES is 1 and so BIN must be
+between \\='(0 0 0 0 0 0 0 0) and  \\='(1 1 1 1 1 1 1 1).
+
+A zero is padded onto the left if the result has an uneven
+length, i.e. 1 becomes 01."
   (declare (pure t) (side-effect-free t))
 
   (--> bin
-     (mapcar #'number-to-string it)
-     (string-join it "")
-     (string-to-number it 2)))
+     (b-bin-to-dec it bytes)
+     (b-dec-to-hex it bytes)))
 
-;; Bin <-> Hex
+;;;; Collections
 
-(defun b-bin-to-hex (bin)
-  "Parse BIN as a list of bits and return the hex string representation.
-
-A zero is padded onto the left if the result has an uneven
-length, i.e. \"1\" becomes \"01\". However the result does not
-include the common \"0x\" prefix since this quickly becomes
-verbose when dealing with a list of hex values.
-
-Examples:
-
-  (b-bin-to-hex \\='(1 0 1 0 0 0)) ==> \"28\"
-  (b-bin-to-hex \\='(1 0 0 0 1 1 0 0 0)) ==> \"0118\""
-  (declare (pure t) (side-effect-free t))
-
-  (->> bin
-     b-bin-to-dec
-     b-dec-to-hex))
-
-(defun b-hex-to-bin (hex)
-  "Return the binary list representation of the hexadecimal HEX.
-
-One or more zeroes are padded onto the left of the resulting list
-if the length is not divisible by 4, i.e. \\='(0 1 1 0 1) becomes
-\\='(0 0 0 0 1 1 0 1).
-
-Examples:
-
-  (b-hex-to-bin \"0D\") ==> \\='(1 1 0 1)
-  (b-hex-to-bin \"11\") ==> \\='(0 0 0 1 0 0 0 1)
-  (b-hex-to-bin \"118\") ==> \\='(0 0 0 1 0 0 0 1 1 0 0 0)"
-  (declare (pure t) (side-effect-free t))
-
-  (->> hex
-     b-hex-to-dec
-     b-dec-to-bin))
-
-;; Collection functions
-
-(defun b-decs-to-hexs (decs)
+(defun b-decs-to-hexs (decs &optional bytes)
   "Return the hex string representation of the list of decimals DECS.
 
-A zero is padded onto the left of each hexadecimal number if the
-result has an uneven length, i.e. \"1\" becomes \"01\". However
-the result does not include the common \"0x\" prefix since this
-quickly becomes verbose when dealing with a list of hex values.
+The value of each byte in DECS gets truncated relative to the
+total BYTES of memory. The default value of BYTES is 1 and so
+each element in DECS must be between 0 and 255.
 
-Examples:
-
-  (b-decs-to-hexs \\='(19 4 130 3 25 3 201 2 190 2 19 3 155 3 8 4 52))
-  ==> \"13 04 82 03 19 03 C9 02 BE 02 13 03 9B 03 08 04 34\""
+A zero is padded onto the left of each hexadecimal number in the
+result list if the individual value has an uneven length, i.e.
+1 becomes 01."
   (declare (pure t) (side-effect-free t))
 
   (--> decs
-       (mapcar #'b-dec-to-hex it)
-       (string-join it " ")))
+       (-map (lambda (dec) (b-dec-to-hex dec bytes)) it)
+       (mapconcat 'identity it " ")))
 
-(defun b-hexs-to-decs (hexs)
+(defun b-hexs-to-decs (hexs &optional bytes)
   "Parse HEXS as a list of hexadecimal numbers and return corresponding decimals.
 
-Examples:
-
-  (b-hexs-to-decs \"13 04 82 03 19 03 C9 02 BE 02 13 03 9B 03 08 04 34\")
-  ==> \\='(19 4 130 3 25 3 201 2 190 2 19 3 155 3 8 4 52)"
+The value of each byte in HEXS gets truncated relative to the
+total BYTES of memory. The default value of BYTES is 1 and so
+each element of HEXS must be between 00 and FF."
   (declare (pure t) (side-effect-free t))
 
   (--> hexs
-       (string-split it " ")
-       (mapcar #'b-hex-to-dec it)))
+       (split-string it " ")
+       (-map (lambda (hex) (b-hex-to-dec hex bytes)) it)))
 
-;; Bit manipulation (decimal)
+;;; Byte manipulation
 
-(defun b-dec-shl (dec count &optional bytes)
-  "Shifts the decimal DEC COUNT bits to the left, relative to BYTES of memory.
+(defun b-dec-shl (dec n &optional bytes)
+  "Shifts decimal DEC N bits to the left, relative to total BYTES of memory.
 
-Omitting BYTES defaults to an uint32 interpretation.
-
-Examples:
-
-  (b-dec-shl 4 1) ==> 8
-  (b-dec-shl 1 8) ==> 256"
+Omitting BYTES defaults its value to 1 byte of memory."
   (declare (pure t) (side-effect-free t))
 
-  (let ((mask (if bytes (- (ash bytes 8) 1) (- (ash 1 32) 1))))
-    (logand mask (ash dec count))))
+  (let ((mem-bytes (if bytes bytes 1)))
+    (b-dec-truncate (ash dec n) mem-bytes)))
 
-(defun b-dec-shr (dec count &optional bytes)
-  "Shifts the decimal DEC COUNT bits to the right, relative to BYTES of memory.
+(defun b-dec-shr (dec n &optional bytes)
+  "Shifts decimal DEC N bits to the right, relative to total BYTES of memory.
 
-Omitting BYTES defaults to an uint32 interpretation.
-
-Examples:
-
-  (b-dec-shr 4 1) ==> 2
-  (b-dec-shr 256 8) ==> 1"
+Omitting BYTES defaults its value to 1 byte of memory."
   (declare (pure t) (side-effect-free t))
 
-  (let ((mask (if bytes (- (ash bytes 8) 1) (- (ash 1 32) 1))))
-    (logand mask (ash dec (- count)))))
+  (let ((mem-bytes (if bytes bytes 1)))
+    (b-dec-truncate (ash dec (- n)) mem-bytes)))
 
-(defalias 'b-dec-and #'logand "TODO")
-
-(defalias 'b-dec-or #'logior "TODO")
-
-(defalias 'b-dec-xor #'logxor "TODO")
-
-(defun b-dec-not (dec)
-  "TODO
-
-Examples:
-
-  (b-dec-not 60) ==> 195"
+(defun b-dec-truncate (dec bytes)
+  "Truncates the decimal DEC, relative to total BYTES of memory."
   (declare (pure t) (side-effect-free t))
 
-  (->> dec
-     b-dec-to-bin
-     (mapcar (lambda (bit) (if (= bit 1) 0 1)))
-     b-bin-to-dec))
+  (let ((max-value (- (expt 2 (* bytes 8)) 1)))
+    (b-dec-and dec max-value)))
 
-;; Bit manipulation (hexadecimal)
-
-(defun b-hex-shl (hex count &optional bytes)
-  "Shifts the hexadecimal HEX COUNT bits to the left, relative to BYTES of memory.
-
-Omitting BYTES defaults to an uint32 interpretation.
-
-Examples:
-
-  (b-hex-shl \"0F\" 4) ==> \"FO\"
-  (b-hex-shl \"F2\" 8) ==> \"F200\""
+(defun b-dec-and (&rest decs)
+  "Logically ANDs each decimal value of DECS."
   (declare (pure t) (side-effect-free t))
 
-  (--> hex
-     (b-hex-to-dec it)
-     (b-dec-shl it count bytes)
-     (b-dec-to-hex it)))
+  (apply #'logand decs))
 
-(defun b-hex-shr (hex count &optional bytes)
-  "Shifts the hexadecimal HEX COUNT bits to the right, relative to BYTES of memory.
+(defun b-dec-or (&rest decs)
+  "Logically ORs each decimal value of DECS."
+  (declare (pure t) (side-effect-free t))
 
-Omitting BYTES defaults to an uint32 interpretation.
+  (apply #'logior decs))
 
-Examples:
+(defun b-dec-xor (&rest decs)
+  "Logically XORs each decimal value of DECS."
+  (declare (pure t) (side-effect-free t))
 
-  (b-hex-shr \"0AF0\" 8) ==> \"0A\"
-  (b-hex-shr \"2F\" 4) ==> \"02\""
+  (apply #'logxor decs))
+
+(defun b-dec-not (dec &optional bytes)
+  "Negates the decimal DEC, relative to total BYTES of memory."
+  (declare (pure t) (side-effect-free t))
+
+  (--> dec
+     (b-dec-to-bin it bytes)
+     (-map (lambda (bit) (if (= bit 1) 0 1)) it)
+     (b-bin-to-dec it bytes)))
+
+(defun b-hex-shl (hex n &optional bytes)
+  "Shifts hexadecimal HEX N bits to the left, relative to total BYTES of memory.
+
+Omitting BYTES defaults its value to 1 byte of memory."
   (declare (pure t) (side-effect-free t))
 
   (--> hex
-       (b-hex-to-dec it)
-       (b-dec-shr it count bytes)
-       (b-dec-to-hex it)))
+     (b-hex-to-dec it bytes)
+     (b-dec-shl it n bytes)
+     (b-dec-to-hex it bytes)))
+
+(defun b-hex-shr (hex n &optional bytes)
+  "Shifts hexadecimal HEX N bits to the right, relative to total BYTES of memory.
+
+Omitting BYTES defaults its value to 1 byte of memory."
+  (declare (pure t) (side-effect-free t))
+
+  (--> hex
+     (b-hex-to-dec it bytes)
+     (b-dec-shr it n bytes)
+     (b-dec-to-hex it bytes)))
 
 (defun b-hex-and (&rest hexs)
-  "TODO
-
-Examples:
-
-  (b-hex-and \"A0\" \"AF\") ==> 160"
+  "Logically ANDs each hexadecimal value of HEXS."
   (declare (pure t) (side-effect-free t))
 
-  (->> hexs
-     (mapcar #'b-hex-to-dec)
-     (apply #'b-dec-and)))
+  (--> hexs
+     (-map (lambda (hex) (b-hex-to-dec hex 4)) it)
+     (apply #'b-dec-and it)
+     ((lambda (dec) (b-dec-to-hex dec 4)) it)))
 
 (defun b-hex-or (&rest hexs)
-  "TODO
-
-Examples:
-
-  (b-hex-or \"A0\" \"AF\") ==> 175"
+  "Logically ORs each hexadecimal value of HEXS."
   (declare (pure t) (side-effect-free t))
 
-  (->> hexs
-       (mapcar #'b-hex-to-dec)
-       (apply #'b-dec-or)))
+  (--> hexs
+     (-map (lambda (hex) (b-hex-to-dec hex 4)) it)
+     (apply #'b-dec-or it)
+     ((lambda (dec) (b-dec-to-hex dec 4)) it)))
 
 (defun b-hex-xor (&rest hexs)
-  "TODO
-
-Examples:
-
-  (b-hex-xor \"A0\" \"AF\") ==> 15"
+  "Logically XORs each hexadecimal value of HEXS."
   (declare (pure t) (side-effect-free t))
 
-  (->> hexs
-       (mapcar #'b-hex-to-dec)
-       (apply #'b-dec-xor)))
+  (--> hexs
+       (-map (lambda (hex) (b-hex-to-dec hex 4)) it)
+       (apply #'b-dec-xor it)
+       ((lambda (dec) (b-dec-to-hex dec 4)) it)))
 
-(defun b-hex-not (hex)
-  "TODO
-
-Examples:
-
-  (b-hex-not \"3C\") ==> \"C3\""
+(defun b-hex-not (hex &optional bytes)
+  "Negates the hexadecimal HEX, relative to total BYTES of memory."
   (declare (pure t) (side-effect-free t))
 
-  (->> hex
-       b-hex-to-dec
-       b-dec-not
-       b-dec-to-hex))
+  (--> hex
+     (b-hex-to-dec it bytes)
+     (b-dec-not it bytes)
+     (b-dec-to-hex it bytes)))
 
-;; Byte parsing
-
-(defun b-left-pad-bytes (decs bytes)
-  "TODO
-
-  (b-left-pad-bytes '(1 2) 4) ;; '(0 0 1 2)"
-  (declare (pure t) (side-effect-free t))
-
-  (if (< (length decs) bytes)
-      (append (make-list (- bytes (length decs)) 0) decs)
-    decs))
-
-(defun b-right-pad-bytes (decs bytes)
-  "TODO
-
-  (b-left-pad-bytes '(1 2) 4) ;; '(0 0 1 2)"
-  (declare (pure t) (side-effect-free t))
-
-  (if (< (length decs) bytes)
-      (append decs (make-list (- bytes (length decs)) 0))
-    decs))
-
-(defun b-sign-bit-set? (dec)
-  "TODO
-
-  (b-sign-bit-set? (car (last '(1 2 3)))) ;; nil"
-  (declare (pure t) (side-effect-free t))
-
-  (eq 1 (nth 0 (b-dec-to-bin dec))))
-
-(defun b-set-sign-bit (dec bit)
-  "TODO
-
-  (b-set-sign-bit 42 1) ;; 170"
-  (declare (pure t) (side-effect-free t))
-
-  (->> dec
-     b-dec-to-bin
-     cdr
-     (cons bit)
-     (b-bin-to-dec)))
+;;; Byte parsing integers
 
 (defun b-dec-parse-little-endian (decs &optional bytes signed)
-  "TODO
+  "Parse a list of decimals DECS as an optionally SIGNED little endian integer.
 
-  (b-dec-parse-little-endian '(127) 1 nil) ;; 127
-  (b-dec-parse-little-endian '(128) 1 t) ;; -128
-  (b-dec-parse-little-endian '(128) 2 t) ;; 128
-  (b-dec-parse-little-endian '(0 128) nil t) ;; -32768
-  (b-dec-parse-little-endian '(0 128) 3 t) ;; 32768"
+Each element of DECS should correspond to a single byte with a
+integer value between 0 and 255, or it will be truncated.
+
+Parsing is done relative to the total BYTES of memory. The
+default value of BYTES is 2, and so DECS will be right-padded
+accordingly if less than BYTES in length."
   (declare (pure t) (side-effect-free t))
 
   (let* ((unsigned-decs (if bytes (b-right-pad-bytes decs bytes) decs))
+         (mem-bytes (if bytes bytes 2))
+         (truncated-decs (-map (lambda (dec) (b-dec-truncate dec 1))
+                               (seq-subseq unsigned-decs 0 mem-bytes)))
 
-         (unsigned-dec (cdr (seq-reduce (lambda (acc dec)
-                                          (let* ((bits (car acc))
-                                                 (acc-result (cdr acc))
-                                                 (new-result (b-dec-shl dec bits)))
-                                            (cons (+ 8 bits)
-                                                  (+ new-result acc-result))))
-                                        unsigned-decs
-                                        (cons 0 0))))
+         (unsigned-dec (cdr (-reduce-from (lambda (acc dec)
+                                            (let* ((bits (car acc))
+                                                   (acc-result (cdr acc))
+                                                   (new-result (b-dec-shl dec bits mem-bytes)))
+                                              (cons (+ 8 bits)
+                                                    (+ new-result acc-result))))
+                                          (cons 0 0)
+                                          truncated-decs)))
 
          (bytes-count (max (or bytes 0) (length decs)))
          (bytes-max-value (expt 2 (* bytes-count 8))))
@@ -386,22 +359,85 @@ Examples:
         unsigned-dec)))
 
 (defun b-dec-parse-big-endian (decs &optional bytes signed)
-  "TODO
+  "Parse a list of decimals DECS as an optionally SIGNED big endian integer.
 
-  (b-dec-parse-big-endian '(127) 1 nil) ;; 127
-  (b-dec-parse-big-endian '(128) 1 t) ;; -128
-  (b-dec-parse-big-endian '(128) 2 t) ;; 128
-  (b-dec-parse-big-endian '(128 0) nil t) ;; -32768
-  (b-dec-parse-big-endian '(128 0) 3 t) ;; 32768"
+Each element of DECS should correspond to a single byte with a
+integer value between 0 and 255, or it will be truncated.
+
+Parsing is done relative to the total BYTES of memory. The
+default value of BYTES is 2, and so DECS will be left-padded
+accordingly if less than BYTES in length."
   (declare (pure t) (side-effect-free t))
 
-  (b-dec-parse-little-endian (reverse decs) bytes signed))
+  (let* ((unsigned-decs (if bytes (b-left-pad-bytes decs bytes) decs))
+         (mem-bytes (if bytes bytes 2))
+         (truncated-decs (-map (lambda (dec) (b-dec-truncate dec 1))
+                               (seq-subseq unsigned-decs 0 mem-bytes))))
 
-;; Misc
+    (b-dec-parse-little-endian (reverse truncated-decs) bytes signed)))
 
-(defun b-insert (value)
-  "TODO"
-  (insert (format "%s" value)))
+;;; Byte parsing floats
+
+(defun b-dec-parse-32bit-float (decs)
+ "Parse DECS into a 32-bit floating point according to the IEEE 754 specification.
+
+DECS should be a list of 4 bytes, formatted according to the
+https://en.wikipedia.org/wiki/Single-precision_floating-point_format,
+where the first bit of the first byte should be the sign bit."
+  (let* ((byte0 (b-dec-to-bin (nth 0 decs)))
+         (byte1 (b-dec-to-bin (nth 1 decs)))
+         (byte2 (b-dec-to-bin (nth 2 decs)))
+         (byte3 (b-dec-to-bin (nth 3 decs)))
+
+         (sign (nth 0 byte0)) ;; bit 31
+         (exponent (b-bin-to-dec (append (-drop 1 byte0) (seq-subseq byte1 0 1)))) ;; bits 23-30
+         (fraction (cdr (-reduce-from (lambda (acc bit)
+                                        (let* ((idx (car acc))
+                                               (acc (cdr acc))
+                                               (value (* bit (expt 2 (- idx)))))
+                                          (cons (+ 1 idx) (+ acc value))))
+                                      (cons 1 0)
+                                      (append (-drop 1 byte1) byte2 byte3))))) ;; bits 0-22
+
+    (cond
+     ((and (eq exponent 255) (= fraction 0)) (* (expt -1 sign) 1.0e+INF))
+     ((and (eq exponent 255) (> fraction 0)) (* (expt -1 sign) 0.0e+NaN))
+
+     (t (* (expt -1 sign)
+           (expt 2 (- exponent 127))
+           (+ 1 fraction))))))
+
+;;; Misc
+
+(defun b-left-pad-bytes (decs bytes)
+  "Left pad a list of decimals DECS, relative to total BYTES of memory."
+  (declare (pure t) (side-effect-free t))
+
+  (if (< (length decs) bytes)
+      (append (make-list (- bytes (length decs)) 0) decs)
+    decs))
+
+(defun b-right-pad-bytes (decs bytes)
+  "Right pad a list of decimals DECS, relative to total BYTES of memory."
+  (declare (pure t) (side-effect-free t))
+
+  (if (< (length decs) bytes)
+      (append decs (make-list (- bytes (length decs)) 0))
+    decs))
+
+(defun b-sign-bit-set? (dec)
+  "Return t if DEC has its sign bit set, nil otherwise."
+  (declare (pure t) (side-effect-free t))
+
+  (eq 128 (b-dec-and 128 dec)))
+
+(defun b-set-sign-bit (dec bit)
+  "Set sign bit of DEC to BIT."
+  (declare (pure t) (side-effect-free t))
+
+  (if (eq bit 1)
+      (b-dec-or 128 dec)
+      (--> dec (b-dec-shl it 1) (b-dec-shr it 1))))
 
 (provide 'b)
 
